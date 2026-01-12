@@ -1,4 +1,5 @@
 -- Script feito por Kipressao11
+-- Modificado para também esp em NPCs e itens em Workspace.RuntimeItems (ex: Deadrails runtime items)
 -- Coloque este script em StarterGui (como LocalScript)
 
 -- Cria o ScreenGui
@@ -48,8 +49,11 @@ end
 
 screenGui:Destroy() --patrocinio
 
+-- Configurações globais
 _G.FriendColor = Color3.fromRGB(0, 0, 255)
 _G.EnemyColor = Color3.fromRGB(255, 0, 0)
+_G.NPCColor = Color3.fromRGB(255, 200, 0) -- cor padrão para NPCs (amarelo)
+_G.ItemColor = Color3.fromRGB(0, 255, 100) -- cor para itens runtime (verde)
 _G.UseTeamColor = true
 
 --------------------------------------------------------------------
@@ -174,7 +178,9 @@ _G.Reantheajfdfjdgs = ":suifayhgvsdghfsfkajewfrhk321rk213kjrgkhj432rj34f67df"
 
 local players = game:GetService("Players")
 local plr = players.LocalPlayer
+local workspace = game:GetService("Workspace")
 
+-- Funç��o que aplica highlight a um personagem de jogador
 function esp(target, color)
     if target.Character then
         if not target.Character:FindFirstChild("GetReal") then
@@ -191,11 +197,191 @@ function esp(target, color)
     end
 end
 
-while task.wait() do
-    for i, v in pairs(players:GetPlayers()) do
-        if v ~= plr then
-            esp(v, _G.UseTeamColor and v.TeamColor.Color or ((plr.TeamColor == v.TeamColor) and _G.FriendColor or _G.EnemyColor))
-        end
+-- Funções para NPCs (modelos no Workspace com Humanoid que NÃO são personagens de players)
+local function isPlayerCharacter(model)
+    if not model or not model:IsA("Model") then return false end
+    return players:GetPlayerFromCharacter(model) ~= nil
+end
+
+local function hasHumanoid(model)
+    if not model or not model:IsA("Model") then return false end
+    -- procura humanoid diretamente entre filhos do Model
+    return model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+local function applyNPCHighlight(model, color)
+    if not model or not model.Parent or not hasHumanoid(model) then return end
+    if isPlayerCharacter(model) then return end -- ignora personagens de jogadores
+    if model:FindFirstChild("GetRealNPC") then
+        model.GetRealNPC.FillColor = color
+        return
+    end
+    local success, _ = pcall(function()
+        local highlight = Instance.new("Highlight")
+        highlight.RobloxLocked = true
+        highlight.Name = "GetRealNPC"
+        highlight.Adornee = model
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.FillColor = color
+        highlight.Parent = model
+    end)
+    return success
+end
+
+local function removeNPCHighlight(model)
+    if not model then return end
+    local h = model:FindFirstChild("GetRealNPC")
+    if h and h.Destroy then
+        h:Destroy()
     end
 end
 
+-- MONITORAMENTO DE NPCs (existentes e dinâmicos)
+for _, obj in ipairs(workspace:GetDescendants()) do
+    if obj:IsA("Model") and hasHumanoid(obj) and not isPlayerCharacter(obj) then
+        applyNPCHighlight(obj, _G.NPCColor)
+    end
+end
+
+workspace.DescendantAdded:Connect(function(desc)
+    if desc:IsA("Model") and hasHumanoid(desc) and not isPlayerCharacter(desc) then
+        -- espera um pouco para garantir construção do modelo
+        task.defer(function()
+            if hasHumanoid(desc) and not isPlayerCharacter(desc) then
+                applyNPCHighlight(desc, _G.NPCColor)
+            end
+        end)
+    end
+end)
+
+workspace.DescendantRemoving:Connect(function(desc)
+    if desc:IsA("Model") then
+        removeNPCHighlight(desc)
+    end
+end)
+
+-- ITENS em RuntimeItems (Deadrails exemplo):
+-- Observa Workspace.RuntimeItems e aplica highlight nos itens (top-level children)
+local runtimeFolderName = "RuntimeItems"
+local runtime = workspace:FindFirstChild(runtimeFolderName)
+local processedItems = {} -- mapa de rootItem -> true
+
+local function applyItemHighlight(root, color)
+    if not root then return end
+    -- evita highlight em personagens e NPCs (somente itens)
+    if root:IsA("Model") and players:GetPlayerFromCharacter(root) then return end
+    if root:FindFirstChild("GetRealItem") then
+        root.GetRealItem.FillColor = color
+        processedItems[root] = true
+        return
+    end
+    local ok, _ = pcall(function()
+        local highlight = Instance.new("Highlight")
+        highlight.RobloxLocked = true
+        highlight.Name = "GetRealItem"
+        -- Adornee aceita Model ou BasePart — highlight no root item é ideal
+        highlight.Adornee = root
+        highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+        highlight.FillColor = color
+        highlight.Parent = root
+    end)
+    if ok then
+        processedItems[root] = true
+    end
+end
+
+local function removeItemHighlight(root)
+    if not root then return end
+    local h = root:FindFirstChild("GetRealItem")
+    if h and h.Destroy then
+        h:Destroy()
+    end
+    processedItems[root] = nil
+end
+
+local function attachRuntimeListeners(rtf)
+    if not rtf then return end
+
+    -- inicial: aplica em cada top-level child (ex: RuntimeItems.GoldBar)
+    for _, child in ipairs(rtf:GetChildren()) do
+        applyItemHighlight(child, _G.ItemColor)
+    end
+
+    -- quando um top-level child for adicionado/ removido
+    rtf.ChildAdded:Connect(function(child)
+        applyItemHighlight(child, _G.ItemColor)
+    end)
+    rtf.ChildRemoved:Connect(function(child)
+        removeItemHighlight(child)
+    end)
+
+    -- também observa se um filho já existente criar/remover sub-objetos relevantes
+    -- (não estritamente necessário, mas ajuda caso o item seja construído depois)
+    rtf.DescendantAdded:Connect(function(desc)
+        local root = desc
+        -- sobe até o top-level que é filho direto de RuntimeItems
+        while root and root.Parent and root.Parent ~= rtf do
+            root = root.Parent
+        end
+        if root and root.Parent == rtf then
+            applyItemHighlight(root, _G.ItemColor)
+        end
+    end)
+    rtf.DescendantRemoving:Connect(function(desc)
+        local root = desc
+        while root and root.Parent and root.Parent ~= rtf do
+            root = root.Parent
+        end
+        if root and root.Parent == rtf then
+            -- se root deixou de existir, remove highlight
+            if not root.Parent then
+                removeItemHighlight(root)
+            end
+        end
+    end)
+end
+
+-- se RuntimeItems já existir ao iniciar, anexa listeners
+if runtime then
+    attachRuntimeListeners(runtime)
+else
+    -- aguarda criação do RuntimeItems (caso seja criado depois)
+    workspace.ChildAdded:Connect(function(c)
+        if c.Name == runtimeFolderName then
+            runtime = c
+            attachRuntimeListeners(runtime)
+        end
+    end)
+end
+
+-- Loop principal: atualiza players, NPCs e re-aplica cor de itens se necessário
+while task.wait(0.5) do
+    -- jogadores
+    for _, v in pairs(players:GetPlayers()) do
+        if v ~= plr then
+            local color = _G.UseTeamColor and v.TeamColor.Color or ((plr and plr.TeamColor == v.TeamColor) and _G.FriendColor or _G.EnemyColor)
+            esp(v, color)
+        end
+    end
+
+    -- NPCs
+    for _, obj in pairs(workspace:GetDescendants()) do
+        if obj:IsA("Model") and hasHumanoid(obj) and not isPlayerCharacter(obj) then
+            applyNPCHighlight(obj, _G.NPCColor)
+        end
+    end
+
+    -- Itens (reaplica cor aos já processados, caso queira mudar _G.ItemColor dinamicamente)
+    for itemObj, _ in pairs(processedItems) do
+        if itemObj and itemObj.Parent then
+            if itemObj:FindFirstChild("GetRealItem") then
+                itemObj.GetRealItem.FillColor = _G.ItemColor
+            else
+                applyItemHighlight(itemObj, _G.ItemColor)
+            end
+        else
+            -- item removido
+            processedItems[itemObj] = nil
+        end
+    end
+end
